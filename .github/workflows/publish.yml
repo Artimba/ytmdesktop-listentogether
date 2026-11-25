@@ -68,6 +68,13 @@ jobs:
         if: (matrix.os.name == 'linux' || matrix.os.name == 'windows') && matrix.os.arch == 'x64'
         run: node scripts/fetch-tailcat.mjs --verify --platform ${{ matrix.os.name == 'windows' && 'win32' || 'linux' }} --arch x64
 
+      - name: Sync package.json version to release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          TAG_VERSION="${RELEASE_TAG#v}" node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); pkg.version = process.env.TAG_VERSION; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
       - name: Make (${{ matrix.os.arch }})
         env:
           YTMD_UPDATE_FEED_OWNER: ${{ github.repository_owner }}
