@@ -1,6 +1,6 @@
 import "./ws-env";
 import {
-  execFileSync,
+  execFile,
   spawn as nodeSpawn,
   type ChildProcess,
   type SpawnOptions,
@@ -275,10 +275,13 @@ export class TailcatHostSidecar {
         fs.mkdirSync(options.stateDir, { recursive: true });
         const keyFile = path.join(options.stateDir, "host.private.json");
         if (!fs.existsSync(keyFile)) {
-          execFileSync(bin, ["genkey", `--key=${keyFile}`], {
-            env,
-            timeout: 5000,
-            windowsHide: true,
+          await new Promise<void>((resolveGen, rejectGen) => {
+            execFile(
+              bin,
+              ["genkey", `--key=${keyFile}`],
+              { env, timeout: 30_000, windowsHide: true },
+              (err) => (err ? rejectGen(err) : resolveGen()),
+            );
           });
         }
         if (fs.existsSync(keyFile)) {
@@ -296,7 +299,7 @@ export class TailcatHostSidecar {
       remotePort === options.localPort
         ? String(options.localPort)
         : `${remotePort}:${options.localPort}`;
-    const args = ["serve", keyArg, "--log", portArg];
+    const args = [keyArg, "serve", "--log", portArg];
     this.logger.debug?.("Starting TailcatHostSidecar", {
       localPort: options.localPort,
       remotePort,
@@ -547,8 +550,8 @@ export class TailcatWsTransport implements ITransport {
       }
 
       const args = [
-        "forward",
         "--key=new",
+        "forward",
         this.tcAddress,
         `${localPort}:${this.remotePort}`,
       ];
@@ -891,7 +894,7 @@ export async function probeTailcatRoomStatus(options: {
   const spawn = options.spawnFn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
   const child = spawn(
     bin,
-    ["forward", "--key=new", options.tcAddress, `${localPort}:${options.remotePort}`],
+    ["--key=new", "forward", options.tcAddress, `${localPort}:${options.remotePort}`],
     {
       env,
       stdio: ["ignore", "pipe", "pipe"],

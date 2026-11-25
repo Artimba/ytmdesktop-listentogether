@@ -1426,7 +1426,11 @@ function handleDragEnd() {
         </div>
       </div>
 
-      <div v-if="friendsOpen" class="lt-friends-list lt-scroll">
+      <div
+        v-if="friendsOpen"
+        class="lt-friends-list lt-scroll"
+        :class="{ 'has-open-menu': openMenuPeerId !== null }"
+      >
         <div
           v-for="req in room.pendingFriendRequests"
           :key="req.id"
@@ -2683,11 +2687,16 @@ function handleDragEnd() {
   height: 24px;
 }
 
+.lt-friends-list.has-open-menu {
+  overflow: visible;
+  z-index: 25;
+}
+
 .lt-member-menu {
   position: absolute;
   right: 0;
   bottom: 26px;
-  z-index: 20;
+  z-index: 30;
   min-width: 168px;
   max-width: calc(100vw - 24px);
   background-color: #111111;

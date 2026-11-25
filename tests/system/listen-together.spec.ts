@@ -392,4 +392,283 @@ test.describe("Listen Together E2E", () => {
       ).toContainText("Second Track");
     }
   });
+
+  test("room name sync, queue track removal, and queue order settings", async () => {
+    const host = await launchYtmdInstance();
+    instances.push(host);
+    const guest = await launchYtmdInstance();
+    instances.push(guest);
+
+    await host.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await host.listenTogetherPage
+      .locator('input[placeholder*="Room name"]')
+      .fill("Chill Vibes");
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-room-name"),
+    ).toHaveText("Chill Vibes");
+
+    const hostState = await getListenTogetherState(host);
+    const inviteUrl = hostState.room?.inviteUrl;
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+    const joinRes = await guest.electronApp.evaluate(
+      (_electron, url: string) => {
+        const ctx = (globalThis as any).__ytmdE2E;
+        return ctx.listenTogetherService.joinByUrl(url, {
+          displayName: "GuestBob",
+        });
+      },
+      inviteUrl!,
+    );
+    expect(joinRes).toEqual({ ok: true });
+
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-room-name"),
+    ).toHaveText("Chill Vibes");
+
+    await enqueueTrackInRoom(host, {
+      entryId: "e-q-1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Track Alpha",
+      author: "Artist A",
+      durationSec: 180,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(host, {
+      entryId: "e-q-2",
+      videoId: "9bZkp7q19f0",
+      title: "Track Beta",
+      author: "Artist B",
+      durationSec: 190,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(host, {
+      entryId: "e-q-3",
+      videoId: "3JZ_D3ELwOQ",
+      title: "Track Gamma",
+      author: "Artist C",
+      durationSec: 200,
+      thumbnailUrl: null,
+    });
+
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(2);
+
+    // Host removes Track Beta from queue
+    await host.listenTogetherPage
+      .getByTestId("lt-queue-row")
+      .first()
+      .locator('button[title="Remove"]')
+      .click();
+
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(1);
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-queue-row").first(),
+    ).toContainText("Track Gamma");
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-queue-row").first(),
+    ).toContainText("Track Gamma");
+
+    // Host switches Queue order setting to FIFO
+    await host.listenTogetherPage.getByTestId("lt-settings-btn").click();
+    const queueOrderSelect = host.listenTogetherPage.locator("#lt-queue-order");
+    await expect(queueOrderSelect).toHaveValue("fair-rr");
+    await queueOrderSelect.selectOption("fifo");
+    await expect(queueOrderSelect).toHaveValue("fifo");
+  });
+
+  test("member moderation: Make DJ, guest enqueue, and Make Listener & Clear Queue", async () => {
+    const host = await launchYtmdInstance();
+    instances.push(host);
+    const guest = await launchYtmdInstance();
+    instances.push(guest);
+
+    await host.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const hostState = await getListenTogetherState(host);
+    const inviteUrl = hostState.room?.inviteUrl;
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+    const joinRes = await guest.electronApp.evaluate(
+      (_electron, url: string) => {
+        const ctx = (globalThis as any).__ytmdE2E;
+        return ctx.listenTogetherService.joinByUrl(url, {
+          displayName: "GuestBob",
+        });
+      },
+      inviteUrl!,
+    );
+    expect(joinRes).toEqual({ ok: true });
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toBeVisible();
+
+    // Ensure GuestBob is Listener first (if room defaulted to DJ), then promote to DJ
+    await host.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    const friendsList = host.listenTogetherPage.locator(".lt-friends-list");
+    await expect(friendsList).toContainText("GuestBob");
+    if ((await friendsList.textContent())?.includes("(DJ)")) {
+      await host.listenTogetherPage
+        .locator('button[title="Member actions"]')
+        .first()
+        .click();
+      await host.listenTogetherPage
+        .getByRole("button", { name: "Make Listener", exact: true })
+        .click();
+      await expect(friendsList).not.toContainText("(DJ)");
+    }
+
+    // Host makes GuestBob a DJ
+    await host.listenTogetherPage
+      .locator('button[title="Member actions"]')
+      .first()
+      .click();
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Make DJ", exact: true })
+      .click();
+
+    await expect(friendsList).toContainText("(DJ)");
+
+    // Enqueue a starting track as host, then GuestBob (as DJ) enqueues a song
+    await enqueueTrackInRoom(host, {
+      entryId: "e-mod-1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Host Opener",
+      author: "Artist",
+      durationSec: 180,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(guest, {
+      entryId: "e-mod-2",
+      videoId: "9bZkp7q19f0",
+      title: "Guest DJ Song",
+      author: "Guest Artist",
+      durationSec: 195,
+      thumbnailUrl: null,
+    });
+
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(1);
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-queue-row").first(),
+    ).toContainText("Guest DJ Song");
+
+    // Host demotes GuestBob and clears their queued song
+    await host.listenTogetherPage
+      .locator('button[title="Member actions"]')
+      .first()
+      .click();
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Make Listener & Clear Queue" })
+      .click();
+
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(0);
+    await expect(
+      host.listenTogetherPage.locator(".lt-friends-list"),
+    ).not.toContainText("(DJ)");
+  });
+
+  test("mutual friend handshake, lobby friends card, refresh animation, and remove friend", async () => {
+    const host = await launchYtmdInstance();
+    instances.push(host);
+    const guest = await launchYtmdInstance();
+    instances.push(guest);
+
+    await host.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const hostState = await getListenTogetherState(host);
+    const inviteUrl = hostState.room?.inviteUrl;
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+    const joinRes = await guest.electronApp.evaluate(
+      (_electron, url: string) => {
+        const ctx = (globalThis as any).__ytmdE2E;
+        return ctx.listenTogetherService.joinByUrl(url, {
+          displayName: "GuestBob",
+        });
+      },
+      inviteUrl!,
+    );
+    expect(joinRes).toEqual({ ok: true });
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toBeVisible();
+
+    // Guest sends friend request to Host
+    await guest.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await guest.listenTogetherPage
+      .locator('button[title="Add friend"]')
+      .first()
+      .click();
+    await expect(
+      guest.listenTogetherPage.locator(".lt-member-pending-chip"),
+    ).toHaveText("Pending");
+
+    // Host accepts friend request
+    await host.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    const acceptBtn = host.listenTogetherPage
+      .locator('button[title="Accept friend"]')
+      .first();
+    await expect(acceptBtn).toBeVisible();
+    await acceptBtn.click();
+
+    // Both sides show Friend badge
+    await expect(
+      host.listenTogetherPage.locator('span[title="Friend"]'),
+    ).toBeVisible();
+    await expect(
+      guest.listenTogetherPage.locator('span[title="Friend"]'),
+    ).toBeVisible();
+
+    // Guest leaves to Lobby and sees HostAlice in Friends card
+    await guest.listenTogetherPage.getByTestId("lt-leave-btn").click();
+    const friendsCard = guest.listenTogetherPage.getByTestId("lt-friends-card");
+    await expect(friendsCard).toBeVisible();
+    await expect(friendsCard).toContainText("HostAlice");
+
+    // HostAlice's room is open, so GuestBob's real Tailcat probe sees "Open" + Join button
+    await expect(friendsCard.locator(".lt-status-chip")).toContainText("Open");
+    await expect(
+      friendsCard.getByRole("button", { name: "Join", exact: true }),
+    ).toBeVisible();
+
+    // HostAlice closes room -> wait for HostAlice to return to Lobby, then Refresh updates status to Offline
+    await host.listenTogetherPage.getByTestId("lt-leave-btn").click();
+    await expect(
+      host.listenTogetherPage.getByRole("button", { name: "Create Room" }),
+    ).toBeVisible();
+    const refreshBtn = friendsCard.locator('button[title="Refresh friends"]');
+    await expect(refreshBtn.locator(".lt-spin")).toHaveCount(0);
+    await refreshBtn.click();
+    await expect(refreshBtn.locator(".lt-spin")).toBeVisible();
+    await expect(friendsCard.locator(".lt-status-chip")).toContainText(
+      "Offline",
+    );
+    await expect(
+      friendsCard.getByRole("button", { name: "Join", exact: true }),
+    ).toHaveCount(0);
+
+    // Remove friend returns card to empty state
+    await friendsCard.locator('button[title="Remove friend"]').click();
+    await expect(friendsCard).toContainText("No friends yet");
+  });
 });

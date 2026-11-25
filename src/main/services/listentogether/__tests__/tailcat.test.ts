@@ -249,7 +249,7 @@ describe("tailcat transport & sidecar", () => {
       expect(spawnCalls).toEqual([
         {
           cmd: "/mock/tailcat",
-          args: ["serve", "--key=new", "--log", "47820:45123"],
+          args: ["--key=new", "serve", "--log", "47820:45123"],
           derp: "https://derp.example.com/map.json",
         },
       ]);
@@ -398,8 +398,8 @@ describe("tailcat transport & sidecar", () => {
       expect(conn.isOpen).toBe(true);
 
       expect(forwarderChildren).toHaveLength(1);
-      expect(forwarderChildren[0].args[0]).toBe("forward");
-      expect(forwarderChildren[0].args[1]).toBe("--key=new");
+      expect(forwarderChildren[0].args[0]).toBe("--key=new");
+      expect(forwarderChildren[0].args[1]).toBe("forward");
       expect(forwarderChildren[0].args[2]).toBe(tcAddress);
       expect(forwarderChildren[0].args[3]).toMatch(
         new RegExp(`^\\d+:${remotePort}$`),

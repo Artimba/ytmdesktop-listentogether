@@ -2218,7 +2218,6 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
   private async refreshFriendsStatus(): Promise<void> {
     if (this.friendProbeInFlight || this.friends.length === 0) return;
     this.friendProbeInFlight = true;
-    const minWait = new Promise<void>((r) => setTimeout(r, 500));
     const tailcatOk = this.isTailcatAvailable();
     this.logger.info?.("Refreshing friends status", {
       friendCount: this.friends.length,
@@ -2272,7 +2271,6 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
           }),
         );
       }
-      await minWait;
       this.friends = this.friends.map((f) =>
         f.status === "checking" ? { ...f, status: "offline" } : f,
       );
@@ -5501,6 +5499,21 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
         void this.applyAnchorToLocalView(msg.anchor);
         this.recordRecentRoom();
         if (msg.inviteUrl) {
+          const parsedInvite = parseInviteUrl(msg.inviteUrl, this.logger);
+          if (
+            parsedInvite?.tc &&
+            parsedInvite.tcp &&
+            this.friends.some((f) => f.pubKeyB64 === parsedInvite.k)
+          ) {
+            this.upsertFriend({
+              pubKeyB64: parsedInvite.k,
+              displayName:
+                this.friends.find((f) => f.pubKeyB64 === parsedInvite.k)
+                  ?.displayName ?? "Friend",
+              tcAddress: parsedInvite.tc,
+              tcPort: parsedInvite.tcp,
+            });
+          }
           void this.startGuestReferralListener(msg.inviteUrl);
         }
         this.emitStateChanged();
