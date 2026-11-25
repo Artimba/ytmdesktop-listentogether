@@ -609,21 +609,6 @@ function handleDragEnd() {
           </div>
 
           <button
-            v-if="!room.isHost"
-            type="button"
-            class="lt-icon-btn"
-            :title="
-              room.isFavorite ? 'Remove from favorites' : 'Save to favorites'
-            "
-            data-testid="lt-favorite-btn"
-            @click="dispatchCommand({ type: 'saveFavoriteRoom' })"
-          >
-            <span class="material-symbols-outlined">
-              {{ room.isFavorite ? "star" : "star_outline" }}
-            </span>
-          </button>
-
-          <button
             v-if="room.isHost"
             type="button"
             class="lt-icon-btn lt-room-settings-btn"

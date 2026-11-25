@@ -995,4 +995,30 @@ describe("room-fsm: host jump, drag reorder, history, and configurable vote skip
     expect(sim.state.skipVotes).toEqual([]);
     expect(sim.state.seq).toBe(2);
   });
+
+  it("createRoomState preserves per-DJ addedBy attribution in initialQueue for fair-queue interleaving", () => {
+    const sim = new MultiPeerRoomSim({
+      initialQueue: [
+        makeTrack(1, { addedBy: "old-host", addedByName: "OldHost" }),
+        makeTrack(2, { addedBy: "old-host", addedByName: "OldHost" }),
+        makeTrack(3, { addedBy: "peer-c", addedByName: "PeerC" }),
+      ],
+    });
+    expect(sim.state.scheduler.perDjQueues["old-host"]).toHaveLength(2);
+    expect(sim.state.scheduler.perDjQueues["peer-c"]).toHaveLength(1);
+    expect(sim.state.scheduler.perDjQueues.host).toBeUndefined();
+
+    // Fair-queue rotation interleaves OldHost #1 -> PeerC #3 -> OldHost #2
+    sim.dispatch({ type: "HOST_TRANSPORT", actorId: "host", action: "play" });
+    expect(sim.state.currentTrack?.addedBy).toBe("old-host");
+    expect(sim.state.currentTrack?.entryId).toBe("entry-1");
+
+    sim.dispatch({ type: "TRACK_ENDED", peerId: "host", seq: 1 });
+    expect(sim.state.currentTrack?.addedBy).toBe("peer-c");
+    expect(sim.state.currentTrack?.entryId).toBe("entry-3");
+
+    sim.dispatch({ type: "TRACK_ENDED", peerId: "host", seq: 2 });
+    expect(sim.state.currentTrack?.addedBy).toBe("old-host");
+    expect(sim.state.currentTrack?.entryId).toBe("entry-2");
+  });
 });

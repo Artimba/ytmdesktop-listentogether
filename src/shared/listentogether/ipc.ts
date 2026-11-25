@@ -54,6 +54,7 @@ export type FriendEntry = {
   tcPort: number | null;
   addedAtMs: number;
   status?: FriendStatus;
+  roomId?: string | null;
   roomName?: string | null;
   memberCount?: number;
   trackTitle?: string | null;

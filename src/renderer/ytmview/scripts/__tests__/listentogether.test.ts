@@ -913,6 +913,38 @@ describe("listentogether pure helpers", () => {
       } finally {
         h2.handle.cleanup();
       }
+
+      // Buffering (playerState === 3) or adPlaying during onVideoDataChange must NOT snap to local mode
+      const h3 = createSetupHarness({ forwardViewLogs: true });
+      try {
+        await h3.invoke("setSessionLock", {
+          locked: true,
+          isHost: false,
+          currentRoomVideoId: null,
+          listeningMode: "room",
+        });
+        await h3.invoke("loadExactVideo", {
+          videoId: "dQw4w9WgXcQ",
+          startPosSec: 0,
+          pausedForBarrier: false,
+        });
+        for (const fn of h3.playerEventListeners.get("onVideoDataChange") ?? []) {
+          fn({ playertype: 1, type: "dataloaded" });
+        }
+        h3.posted.length = 0;
+
+        h3.fakePlayerApi.getPlayerState = () => 3;
+        h3.setPlayerResponse({
+          videoDetails: { videoId: "kJQP7kiw5Fk", title: "Buffered Next", author: "A", lengthSeconds: "180" },
+          playabilityStatus: { status: "OK" },
+        });
+        for (const fn of h3.playerEventListeners.get("onVideoDataChange") ?? []) {
+          fn({ playertype: 1, type: "dataloaded" });
+        }
+        expect(h3.posted.some((m) => m.name === "localPlaybackStarted")).toBe(false);
+      } finally {
+        h3.handle.cleanup();
+      }
     });
 
     it("enters local listening mode on first playerApi.loadVideoById for a non-room video and does not emit hostTransportRequested('pause')", async () => {

@@ -2018,6 +2018,29 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     this.saveFriends();
   }
 
+  private syncFriendsDisplayNamesFromMembers(
+    members: ReadonlyArray<{ peerId: string; displayName: string }>,
+  ): void {
+    if (this.friends.length === 0 || members.length === 0) return;
+    const byPeerId = new Map<string, string>();
+    for (const m of members) {
+      const clean = m.displayName.trim().slice(0, 32);
+      if (clean) byPeerId.set(m.peerId, clean);
+    }
+    let changed = false;
+    this.friends = this.friends.map((f) => {
+      const nextName = byPeerId.get(f.pubKeyB64);
+      if (nextName && nextName !== f.displayName) {
+        changed = true;
+        return { ...f, displayName: nextName };
+      }
+      return f;
+    });
+    if (changed) {
+      this.saveFriends();
+    }
+  }
+
   private sendFriendAppMessage(
     targetPeerId: string,
     msg:
@@ -2262,19 +2285,29 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
               memberCount: res.memberCount ?? null,
               hasTrack: Boolean(res.trackTitle),
             });
-            this.friends = this.friends.map((f) =>
-              f.pubKeyB64 === friend.pubKeyB64
-                ? {
-                    ...f,
-                    status: res.online ? "online" : "offline",
-                    roomName: res.online ? (res.roomName ?? null) : null,
-                    memberCount: res.online ? res.memberCount : undefined,
-                    trackTitle: res.online ? (res.trackTitle ?? null) : null,
-                    positionSec: res.online ? res.positionSec : undefined,
-                    durationSec: res.online ? res.durationSec : undefined,
-                  }
-                : f,
-            );
+            let friendNameChanged = false;
+            this.friends = this.friends.map((f) => {
+              if (f.pubKeyB64 !== friend.pubKeyB64) return f;
+              const nextDisplayName =
+                res.online && res.displayName ? res.displayName : f.displayName;
+              if (nextDisplayName !== f.displayName) {
+                friendNameChanged = true;
+              }
+              return {
+                ...f,
+                displayName: nextDisplayName,
+                status: res.online ? "online" : "offline",
+                roomId: res.online ? (res.roomId ?? null) : null,
+                roomName: res.online ? (res.roomName ?? null) : null,
+                memberCount: res.online ? res.memberCount : undefined,
+                trackTitle: res.online ? (res.trackTitle ?? null) : null,
+                positionSec: res.online ? res.positionSec : undefined,
+                durationSec: res.online ? res.durationSec : undefined,
+              };
+            });
+            if (friendNameChanged) {
+              this.saveFriends();
+            }
             this.emitStateChanged();
           }),
         );
@@ -2292,7 +2325,9 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     this.guestRoomInviteUrl = inviteUrl;
     if (this.guestReferralHost) {
       this.guestReferralHost.setStatusMeta({
+        roomId: this.guestRoomId ?? undefined,
         roomName: this.guestSettings?.roomName ?? "",
+        displayName: this.displayName || undefined,
         memberCount: this.guestMembers.length,
       });
       return;
@@ -2305,7 +2340,9 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       ...this.injectedDeps.directHostOptions,
     });
     referralHost.setStatusMeta({
+      roomId: this.guestRoomId ?? undefined,
       roomName: this.guestSettings?.roomName ?? "",
+      displayName: this.displayName || undefined,
       memberCount: this.guestMembers.length,
     });
     referralHost.onConnection((conn) => {
@@ -2734,7 +2771,9 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     const snapshot = this.getUIState();
     if (snapshot.room) {
       const statusMeta = {
+        roomId: snapshot.room.roomId,
         roomName: snapshot.room.roomName,
+        displayName: this.displayName || undefined,
         memberCount: snapshot.room.members.length,
         trackTitle: snapshot.room.currentTrack?.title ?? "",
         positionSec: snapshot.room.remotePositionSec,
@@ -4081,6 +4120,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
         }
 
         case "BROADCAST_MEMBERS_UPDATED": {
+          this.syncFriendsDisplayNamesFromMembers(effect.members);
           this.broadcastEncryptedToPeers({
             type: "MEMBERS_UPDATED",
             epoch: effect.epoch,
@@ -5537,6 +5577,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
         this.guestRoomId = msg.roomId;
         this.guestSettings = msg.settings;
         this.guestMembers = msg.members;
+        this.syncFriendsDisplayNamesFromMembers(msg.members);
         this.guestCurrentTrack = msg.currentTrack;
         this.guestAnchor = msg.anchor;
         this.guestQueue = msg.queue;
@@ -5605,6 +5646,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       case "MEMBERS_UPDATED": {
         const prevRole = this.getLocalRole();
         this.guestMembers = msg.members;
+        this.syncFriendsDisplayNamesFromMembers(msg.members);
         const nextRole = this.getLocalRole();
         if (prevRole !== nextRole) {
           void this.applySessionLockToView(

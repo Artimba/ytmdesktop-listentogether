@@ -2613,11 +2613,15 @@ export default function setupListenTogether(
             return;
           }
 
+          if (isAdPlaying()) {
+            return;
+          }
+
           const playerState = Number(playerApi.getPlayerState?.() ?? -1);
           const justEndedRoomTrack =
             roomTrackEndedAtMs > 0 &&
             Date.now() - roomTrackEndedAtMs < ROOM_AUTO_ADVANCE_WINDOW_MS;
-          if (justEndedRoomTrack || playerState === 0) {
+          if (justEndedRoomTrack || playerState === 0 || playerState === 3) {
             emitViewLog(
               "info",
               "[ListenTogether][YTMView] Suppressed YTM auto-advance at end of room track; waiting for room next track",

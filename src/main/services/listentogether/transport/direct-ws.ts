@@ -350,13 +350,17 @@ export class DirectWsHost {
   private currentLookupId = "";
   private currentLabel = "";
   private statusMeta: {
+    roomId: string;
     roomName: string;
+    displayName: string;
     memberCount: number;
     trackTitle: string;
     positionSec: number;
     durationSec: number;
   } = {
+    roomId: "",
     roomName: "",
+    displayName: "",
     memberCount: 0,
     trackTitle: "",
     positionSec: 0,
@@ -382,14 +386,22 @@ export class DirectWsHost {
   }
 
   public setStatusMeta(meta: {
+    roomId?: string;
     roomName?: string;
+    displayName?: string;
     memberCount?: number;
     trackTitle?: string;
     positionSec?: number;
     durationSec?: number;
   }): void {
+    if (typeof meta.roomId === "string") {
+      this.statusMeta.roomId = meta.roomId.slice(0, 64);
+    }
     if (typeof meta.roomName === "string") {
       this.statusMeta.roomName = meta.roomName.slice(0, 64);
+    }
+    if (typeof meta.displayName === "string") {
+      this.statusMeta.displayName = meta.displayName.trim().slice(0, 32);
     }
     if (typeof meta.memberCount === "number" && Number.isFinite(meta.memberCount)) {
       this.statusMeta.memberCount = Math.max(0, Math.floor(meta.memberCount));
@@ -426,7 +438,9 @@ export class DirectWsHost {
       if (req.method === "GET" && req.url === "/lt-status") {
         const body = JSON.stringify({
           ok: true,
+          roomId: this.statusMeta.roomId,
           roomName: this.statusMeta.roomName,
+          displayName: this.statusMeta.displayName,
           memberCount: this.statusMeta.memberCount,
           trackTitle: this.statusMeta.trackTitle,
           positionSec: this.statusMeta.positionSec,
@@ -469,34 +483,37 @@ export class DirectWsHost {
       });
       this.activeConnections.add(conn);
 
-      let isAlive = true;
-      const onPong = () => {
-        isAlive = true;
+      let missedPongs = 0;
+      const resetHeartbeat = () => {
+        missedPongs = 0;
       };
-      ws.on("pong", onPong);
+      ws.on("pong", resetHeartbeat);
+      ws.on("message", resetHeartbeat);
       const heartbeatTimer = setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        if (!isAlive) {
+        if (missedPongs >= 2) {
           this.logger.warn?.("DirectWsHost peer missed heartbeat pong; closing", {
             id,
             remoteAddr,
             remotePort,
+            missedPongs,
           });
           ws.terminate();
           return;
         }
-        isAlive = false;
+        missedPongs += 1;
         try {
           ws.ping();
         } catch {
           ws.terminate();
         }
-      }, 10_000);
+      }, 15_000);
       heartbeatTimer.unref?.();
 
       conn.onClose((code) => {
         clearInterval(heartbeatTimer);
-        ws.off("pong", onPong);
+        ws.off("pong", resetHeartbeat);
+        ws.off("message", resetHeartbeat);
         this.activeConnections.delete(conn);
         this.logger.debug?.("DirectWsHost client disconnected", { id, code });
       });

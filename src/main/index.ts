@@ -227,6 +227,12 @@ if (!gotTheLock) {
 }
 
 log.info("Application launched", {
+  version: app.getVersion(),
+  isPackaged: app.isPackaged,
+  platform: process.platform,
+  arch: process.arch,
+  electron: process.versions.electron,
+  node: process.versions.node,
   logFile: log.transports.file.getFile()?.path ?? null,
 });
 

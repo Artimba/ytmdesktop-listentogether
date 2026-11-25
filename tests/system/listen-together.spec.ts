@@ -671,6 +671,34 @@ test.describe("Listen Together E2E", () => {
       friendsCard.getByRole("button", { name: "Join", exact: true }),
     ).toHaveCount(0);
 
+    // HostAlice renames to HostAliceV2 and reopens room -> GuestBob rejoins & leaves, then sees HostAliceV2 in Friends card
+    await host.listenTogetherPage.locator("#lt-display-name").fill("HostAliceV2");
+    await host.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      host.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+    const renamedState = await getListenTogetherState(host);
+    const renamedInviteUrl = renamedState.room?.inviteUrl ?? "";
+    expect(renamedInviteUrl).toMatch(/^ytmd:\/\/l\//);
+    const rejoinRes = await guest.electronApp.evaluate(
+      (_electron, url: string) => {
+        const ctx = (globalThis as any).__ytmdE2E;
+        return ctx.listenTogetherService.joinByUrl(url, {
+          displayName: "GuestBob",
+        });
+      },
+      renamedInviteUrl,
+    );
+    expect(rejoinRes).toEqual({ ok: true });
+    await expect(
+      guest.listenTogetherPage.getByTestId("lt-leave-btn"),
+    ).toBeVisible();
+    await guest.listenTogetherPage.getByTestId("lt-leave-btn").click();
+    await expect(friendsCard.locator(".lt-status-chip")).toContainText("Open");
+    await expect(friendsCard).toContainText("HostAliceV2");
+
     // Remove friend returns card to empty state
     await friendsCard.locator('button[title="Remove friend"]').click();
     await expect(friendsCard).toContainText("No friends yet");
@@ -725,13 +753,25 @@ test.describe("Listen Together E2E", () => {
       charlie.listenTogetherPage.getByTestId("lt-friends-toggle"),
     ).toContainText("Friends (3)");
 
-    // Bob and Alice become mutual friends; FRIEND_ANNOUNCE populates Bob's tcAddress/47820 on Alice
+    // Bob and Charlie both become mutual friends with Alice so Lobby groups them by shared room later
     await bob.listenTogetherPage.getByTestId("lt-friends-toggle").click();
     await bob.listenTogetherPage
       .locator('button[title="Add friend"]')
       .first()
       .click();
+    await charlie.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await charlie.listenTogetherPage
+      .locator('button[title="Add friend"]')
+      .first()
+      .click();
     await alice.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await expect(
+      alice.listenTogetherPage.locator('button[title="Accept friend"]'),
+    ).toHaveCount(2);
+    await alice.listenTogetherPage
+      .locator('button[title="Accept friend"]')
+      .first()
+      .click();
     await alice.listenTogetherPage
       .locator('button[title="Accept friend"]')
       .first()
@@ -739,7 +779,12 @@ test.describe("Listen Together E2E", () => {
 
     await expect(
       alice.listenTogetherPage.locator('span[title="Friend"]'),
-    ).toBeVisible();
+    ).toHaveCount(2);
+
+    // Deprecated Favorites star button is not rendered for guests
+    await expect(
+      charlie.listenTogetherPage.getByTestId("lt-favorite-btn"),
+    ).toHaveCount(0);
 
     // Mixed queue additions from all 3 members
     await enqueueTrackInRoom(alice, {
@@ -808,6 +853,39 @@ test.describe("Listen Together E2E", () => {
       ).toContainText("Alice Track 2");
     }
 
+    // Add Charlie Track 2 so post-migration queue has multiple DJs, and seek Alice Track 1 to 42s
+    await enqueueTrackInRoom(charlie, {
+      entryId: "e-3p-c2",
+      videoId: "kJQP7kiw5Fk",
+      title: "Charlie Track 2",
+      author: "Charlie",
+      durationSec: 220,
+      thumbnailUrl: null,
+    });
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(2);
+    }
+
+    await simulateTrackReady(alice, "dQw4w9WgXcQ");
+    await simulateTrackReady(bob, "dQw4w9WgXcQ");
+    await simulateTrackReady(charlie, "dQw4w9WgXcQ");
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.desiredState)
+      .toBe("PLAYING");
+    await alice.electronApp.evaluate(() => {
+      const ctx = (globalThis as any).__ytmdE2E;
+      ctx.listenTogetherService.handleCommand({
+        type: "hostTransport",
+        action: "seek",
+        seekPosSec: 42,
+      });
+    });
+    await expect
+      .poll(async () => (await getListenTogetherState(bob)).room?.remotePositionSec ?? 0)
+      .toBeGreaterThanOrEqual(41);
+
     // Host Alice clicks Leave (endForAll: false) -> host migrates to Bob, Charlie stays in room
     await alice.listenTogetherPage.getByTestId("lt-leave-btn").click();
     await expect(
@@ -821,15 +899,42 @@ test.describe("Listen Together E2E", () => {
       charlie.listenTogetherPage.getByTestId("lt-friends-toggle"),
     ).toContainText("Friends (2)");
 
-    // Alice sees Bob as Open in Lobby Friends card and rejoins via Join button
+    // New host (Bob) preserves original addedBy attribution AND fair-queue order (Charlie Track 2 -> Alice Track 2)
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText("Queued by HostAlice");
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-queue-row").nth(0),
+    ).toContainText("Charlie Track 2");
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-queue-row").nth(0),
+    ).toContainText("by GuestCharlie");
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-queue-row").nth(1),
+    ).toContainText("Alice Track 2");
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-queue-row").nth(1),
+    ).toContainText("by HostAlice");
+
+    // Timestamp syncs seamlessly across host migration (does not reset to 0)
+    await expect
+      .poll(async () => (await getListenTogetherState(bob)).room?.remotePositionSec ?? 0)
+      .toBeGreaterThanOrEqual(41);
+    await expect
+      .poll(async () => (await getListenTogetherState(charlie)).room?.remotePositionSec ?? 0)
+      .toBeGreaterThanOrEqual(41);
+
+    // Alice sees Bob & Charlie grouped under shared lobby "Trio Room" and rejoins via group Join button
     const aliceFriendsCard = alice.listenTogetherPage.getByTestId("lt-friends-card");
     const aliceRefresh = aliceFriendsCard.locator('button[title="Refresh friends"]');
     await expect(aliceRefresh.locator(".lt-spin")).toHaveCount(0);
     await aliceRefresh.click();
-    await expect(aliceFriendsCard.locator(".lt-status-chip")).toContainText(
-      "Open",
-    );
-    await aliceFriendsCard
+    const lobbyGroup = aliceFriendsCard.getByTestId("lt-friend-lobby-group");
+    await expect(lobbyGroup).toBeVisible();
+    await expect(lobbyGroup).toContainText("Trio Room");
+    await expect(lobbyGroup).toContainText("GuestBob");
+    await expect(lobbyGroup).toContainText("GuestCharlie");
+    await lobbyGroup
       .getByRole("button", { name: "Join", exact: true })
       .click();
 
@@ -838,7 +943,10 @@ test.describe("Listen Together E2E", () => {
     ).toContainText("Friends (3)");
     await expect(
       alice.listenTogetherPage.getByTestId("lt-queue-row").first(),
-    ).toContainText("Alice Track 2");
+    ).toContainText("Charlie Track 2");
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.remotePositionSec ?? 0)
+      .toBeGreaterThanOrEqual(41);
   });
 
   test("3-person room: in-ad peer requires strict majority for TRACK_ENDED and non-owner TRACK_UNAVAILABLE does not skip", async () => {
@@ -1077,5 +1185,144 @@ test.describe("Listen Together E2E", () => {
     await expect(
       alice.listenTogetherPage.locator(".lt-friends-list"),
     ).not.toContainText("In ad");
+  });
+
+  test("QA edge cases: naughty display names, truncation, and identical conflicting display names", async () => {
+    const alice = await launchYtmdInstance();
+    instances.push(alice);
+    const bob = await launchYtmdInstance();
+    instances.push(bob);
+    const charlie = await launchYtmdInstance();
+    instances.push(charlie);
+
+    // 1. Whitespace-only display name is rejected in Lobby
+    await alice.listenTogetherPage.locator("#lt-display-name").fill("   \t  ");
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByRole("button", { name: "Create Room" }),
+    ).toBeVisible();
+
+    // 2. Over-32-char naughty string is clamped to 32 chars and rendered safely without XSS
+    const naughtyLong = "A".repeat(40) + "<img src=x onerror=alert(1)>";
+    await alice.listenTogetherPage.locator("#lt-display-name").fill(naughtyLong);
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+    const clampedState = await getListenTogetherState(alice);
+    expect(clampedState.displayName).toHaveLength(32);
+    await alice.listenTogetherPage.getByTestId("lt-leave-btn").click();
+    await expect(
+      alice.listenTogetherPage.getByRole("button", { name: "Create Room" }),
+    ).toBeVisible();
+
+    // 3. All 3 peers join with identical XSS/Unicode naughty display name
+    const twinName = "Twin🎧<script>alert(1)</script>"; // 31 chars
+    await alice.listenTogetherPage.locator("#lt-display-name").fill(twinName);
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const aliceState = await getListenTogetherState(alice);
+    const inviteUrl = aliceState.room?.inviteUrl ?? "";
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+
+    for (const [peer, rawName] of [
+      [bob, twinName],
+      [charlie, `  ${twinName}  `],
+    ] as const) {
+      const joinRes = await peer.electronApp.evaluate(
+        (_electron, args: { url: string; displayName: string }) => {
+          const ctx = (globalThis as any).__ytmdE2E;
+          return ctx.listenTogetherService.joinByUrl(args.url, {
+            displayName: args.displayName.trim().slice(0, 32),
+          });
+        },
+        { url: inviteUrl, displayName: rawName },
+      );
+      expect(joinRes).toEqual({ ok: true });
+    }
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-friends-toggle"),
+      ).toContainText("Friends (3)");
+    }
+
+    // Open member list on Bob: 3 distinct members, no injected <script>/<img>, exactly one (You) & one (Host)
+    await bob.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    const memberNames = bob.listenTogetherPage.locator(".lt-member-name");
+    await expect(memberNames).toHaveCount(3);
+    for (let i = 0; i < 3; i++) {
+      await expect(memberNames.nth(i)).toHaveText(twinName);
+    }
+    await expect(
+      bob.listenTogetherPage.locator(".lt-friends-list script"),
+    ).toHaveCount(0);
+    await expect(
+      bob.listenTogetherPage.locator(".lt-friends-list").getByText("(You)"),
+    ).toHaveCount(1);
+    await expect(
+      bob.listenTogetherPage.locator(".lt-friends-list").getByText("(Host)"),
+    ).toHaveCount(1);
+
+    // 4. Fair-queue & attribution stay isolated per peerId even with identical displayName
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-twin-a1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Twin Alice 1",
+      author: "Artist",
+      durationSec: 180,
+      thumbnailUrl: null,
+    });
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText("Twin Alice 1");
+    // Bob must NOT see "Queued by You" for Alice's track despite identical displayName
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText(`Queued by ${twinName}`);
+
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-twin-a2",
+      videoId: "9bZkp7q19f0",
+      title: "Twin Alice 2",
+      author: "Artist",
+      durationSec: 185,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(bob, {
+      entryId: "e-twin-b1",
+      videoId: "3JZ_D3ELwOQ",
+      title: "Twin Bob 1",
+      author: "Artist",
+      durationSec: 190,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(charlie, {
+      entryId: "e-twin-c1",
+      videoId: "kJQP7kiw5Fk",
+      title: "Twin Charlie 1",
+      author: "Artist",
+      durationSec: 195,
+      thumbnailUrl: null,
+    });
+
+    // Fair queue interleaves: Twin Bob 1 -> Twin Charlie 1 -> Twin Alice 2
+    const bobQueue = bob.listenTogetherPage.getByTestId("lt-queue-row");
+    await expect(bobQueue).toHaveCount(3);
+    await expect(bobQueue.nth(0)).toContainText("Twin Bob 1");
+    await expect(bobQueue.nth(0)).toContainText("by You");
+    await expect(bobQueue.nth(1)).toContainText("Twin Charlie 1");
+    await expect(bobQueue.nth(1)).toContainText(`by ${twinName}`);
+    await expect(bobQueue.nth(2)).toContainText("Twin Alice 2");
+    await expect(bobQueue.nth(2)).toContainText(`by ${twinName}`);
   });
 });

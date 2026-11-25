@@ -858,7 +858,9 @@ export class TailcatWsTransport implements ITransport {
 
 export type ProbeTailcatRoomStatusResult = {
   online: boolean;
+  roomId?: string | null;
   roomName?: string | null;
+  displayName?: string | null;
   memberCount?: number;
   trackTitle?: string | null;
   positionSec?: number;
@@ -985,7 +987,9 @@ export async function probeTailcatRoomStatus(options: {
             try {
               const parsed = JSON.parse(raw) as {
                 ok?: boolean;
+                roomId?: unknown;
                 roomName?: unknown;
+                displayName?: unknown;
                 memberCount?: unknown;
                 trackTitle?: unknown;
                 positionSec?: unknown;
@@ -993,9 +997,18 @@ export async function probeTailcatRoomStatus(options: {
               };
               finish({
                 online: Boolean(parsed?.ok),
+                roomId:
+                  typeof parsed?.roomId === "string" && parsed.roomId.trim()
+                    ? parsed.roomId.trim()
+                    : null,
                 roomName:
                   typeof parsed?.roomName === "string" && parsed.roomName.trim()
                     ? parsed.roomName.trim()
+                    : null,
+                displayName:
+                  typeof parsed?.displayName === "string" &&
+                  parsed.displayName.trim()
+                    ? parsed.displayName.trim().slice(0, 32)
                     : null,
                 memberCount:
                   typeof parsed?.memberCount === "number"

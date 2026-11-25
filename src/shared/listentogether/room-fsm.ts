@@ -199,9 +199,10 @@ export function createRoomState(options: CreateRoomStateOptions): RoomState {
   let scheduler = createSchedulerState(settings.queueMode);
   if (options.initialQueue) {
     for (const track of options.initialQueue) {
+      const djId = track.addedBy || options.hostPeerId;
       const res = enqueueDjTrack(
         scheduler,
-        options.hostPeerId,
+        djId,
         track,
         "admin",
         settings.rateLimitPreset,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type {
+  FriendEntry,
   ListenTogetherLanRoomUI,
   ListenTogetherUIState,
 } from "~shared/listentogether/ipc";
@@ -33,6 +34,74 @@ const derpFeedback = ref<{ text: string; isError: boolean } | null>(null);
 const logFeedback = ref<string | null>(null);
 const busyAction = ref<"create" | "join" | "derp" | null>(null);
 const refreshingFriends = ref(false);
+
+type FriendLobbyBucket =
+  | {
+      kind: "group";
+      key: string;
+      roomName: string;
+      memberCount: number | undefined;
+      leadFriend: FriendEntry;
+      friends: FriendEntry[];
+    }
+  | {
+      kind: "single";
+      key: string;
+      friend: FriendEntry;
+    };
+
+function friendLobbyKey(friend: FriendEntry): string | null {
+  if (friend.status !== "online") return null;
+  if (friend.roomId && friend.roomId.trim()) {
+    return `id:${friend.roomId.trim()}`;
+  }
+  if (friend.roomName && friend.roomName.trim()) {
+    return `name:${friend.roomName.trim().toLowerCase()}`;
+  }
+  return null;
+}
+
+const friendBuckets = computed<FriendLobbyBucket[]>(() => {
+  const groupsByKey = new Map<string, FriendEntry[]>();
+  for (const friend of props.state.friends) {
+    const key = friendLobbyKey(friend);
+    if (!key) continue;
+    const list = groupsByKey.get(key);
+    if (list) {
+      list.push(friend);
+    } else {
+      groupsByKey.set(key, [friend]);
+    }
+  }
+
+  const emittedGroups = new Set<string>();
+  const result: FriendLobbyBucket[] = [];
+  for (const friend of props.state.friends) {
+    const key = friendLobbyKey(friend);
+    const grouped = key ? groupsByKey.get(key) : undefined;
+    if (key && grouped && grouped.length > 1) {
+      if (emittedGroups.has(key)) continue;
+      emittedGroups.add(key);
+      const leadFriend =
+        grouped.find((f) => Boolean(f.trackTitle || f.roomName)) ?? grouped[0];
+      result.push({
+        kind: "group",
+        key,
+        roomName: leadFriend.roomName?.trim() || "Shared Lobby",
+        memberCount: leadFriend.memberCount,
+        leadFriend,
+        friends: grouped,
+      });
+    } else {
+      result.push({
+        kind: "single",
+        key: friend.pubKeyB64,
+        friend,
+      });
+    }
+  }
+  return result;
+});
 
 async function handleRefreshFriends() {
   if (refreshingFriends.value) return;
@@ -410,112 +479,223 @@ function handleDismissError() {
         </div>
 
         <div v-if="state.friends.length > 0" class="lt-lan-list">
-          <div
-            v-for="friend in state.friends"
-            :key="friend.pubKeyB64"
-            class="lt-friend-entry"
-            :class="{
-              'is-online': friend.status === 'online',
-              'is-offline': friend.status !== 'online',
-            }"
-          >
-            <div class="lt-friend-top-row">
-              <span
-                class="lt-status-chip"
-                :class="{
-                  'is-online': friend.status === 'online',
-                  'is-checking': friend.status === 'checking',
-                  'is-offline':
-                    friend.status !== 'online' && friend.status !== 'checking',
-                }"
-              >
-                <span class="lt-status-dot" />
-                <span>
-                  {{
-                    friend.status === "online"
-                      ? "Open"
-                      : friend.status === "checking"
-                        ? "…"
-                        : "Offline"
-                  }}
+          <template v-for="bucket in friendBuckets" :key="bucket.key">
+            <div
+              v-if="bucket.kind === 'group'"
+              class="lt-friend-entry is-online lt-friend-group"
+              data-testid="lt-friend-lobby-group"
+            >
+              <div class="lt-friend-top-row">
+                <span class="lt-status-chip is-online">
+                  <span class="lt-status-dot" />
+                  <span>Open</span>
                 </span>
-              </span>
-
-              <span class="lt-friend-name-chip">{{ friend.displayName }}</span>
-
-              <span
-                v-if="friend.status === 'online' && friend.memberCount"
-                class="lt-friend-users-chip"
-                :title="`${friend.memberCount} in room`"
-              >
-                <span class="material-symbols-outlined lt-friend-users-icon">
-                  group
+                <span class="lt-friend-name-chip lt-friend-group-title">
+                  {{ bucket.roomName }}
                 </span>
-                <span>{{ friend.memberCount }}</span>
-              </span>
+                <span
+                  v-if="bucket.memberCount"
+                  class="lt-friend-users-chip"
+                  :title="`${bucket.memberCount} in room`"
+                >
+                  <span class="material-symbols-outlined lt-friend-users-icon">
+                    group
+                  </span>
+                  <span>{{ bucket.memberCount }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="lt-btn lt-btn-sm lt-btn-primary lt-friend-join-pill"
+                  :disabled="busyAction !== null"
+                  @click="
+                    dispatchCommand({
+                      type: 'joinFriend',
+                      pubKeyB64: bucket.leadFriend.pubKeyB64,
+                    })
+                  "
+                >
+                  Join
+                </button>
+              </div>
 
-              <button
-                v-if="friend.status === 'online'"
-                type="button"
-                class="lt-btn lt-btn-sm lt-btn-primary lt-friend-join-pill"
-                :disabled="busyAction !== null"
-                @click="
-                  dispatchCommand({
-                    type: 'joinFriend',
-                    pubKeyB64: friend.pubKeyB64,
-                  })
-                "
-              >
-                Join
-              </button>
+              <div class="lt-friend-group-members">
+                <div
+                  v-for="friend in bucket.friends"
+                  :key="friend.pubKeyB64"
+                  class="lt-friend-group-member-row"
+                >
+                  <span class="lt-friend-group-member-name">
+                    {{ friend.displayName }}
+                  </span>
+                  <button
+                    type="button"
+                    class="lt-icon-btn lt-friend-remove-btn"
+                    title="Remove friend"
+                    @click="
+                      dispatchCommand({
+                        type: 'removeFriend',
+                        pubKeyB64: friend.pubKeyB64,
+                      })
+                    "
+                  >
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                </div>
+              </div>
 
-              <button
-                type="button"
-                class="lt-icon-btn lt-friend-remove-btn"
-                title="Remove friend"
-                @click="
-                  dispatchCommand({
-                    type: 'removeFriend',
-                    pubKeyB64: friend.pubKeyB64,
-                  })
-                "
+              <div
+                v-if="bucket.leadFriend.trackTitle"
+                class="lt-friend-now-playing"
               >
-                <span class="material-symbols-outlined">close</span>
-              </button>
+                <div class="lt-friend-track-row">
+                  <span class="lt-friend-track-title">
+                    {{ bucket.leadFriend.trackTitle }}
+                  </span>
+                  <span
+                    v-if="
+                      bucket.leadFriend.durationSec &&
+                      bucket.leadFriend.durationSec > 0
+                    "
+                    class="lt-friend-track-time"
+                  >
+                    {{ formatDuration(bucket.leadFriend.positionSec) }} /
+                    {{ formatDuration(bucket.leadFriend.durationSec) }}
+                  </span>
+                </div>
+                <div
+                  v-if="
+                    bucket.leadFriend.durationSec &&
+                    bucket.leadFriend.durationSec > 0
+                  "
+                  class="lt-friend-progress-bar"
+                >
+                  <div
+                    class="lt-friend-progress-fill"
+                    :style="{
+                      width: `${friendProgressPct(bucket.leadFriend.positionSec, bucket.leadFriend.durationSec)}%`,
+                    }"
+                  />
+                </div>
+              </div>
             </div>
 
             <div
-              v-if="
-                friend.status === 'online' &&
-                (friend.trackTitle || friend.roomName)
-              "
-              class="lt-friend-now-playing"
+              v-else
+              class="lt-friend-entry"
+              :class="{
+                'is-online': bucket.friend.status === 'online',
+                'is-offline': bucket.friend.status !== 'online',
+              }"
             >
-              <div class="lt-friend-track-row">
-                <span class="lt-friend-track-title">
-                  {{ friend.trackTitle || friend.roomName }}
-                </span>
+              <div class="lt-friend-top-row">
                 <span
-                  v-if="friend.durationSec && friend.durationSec > 0"
-                  class="lt-friend-track-time"
-                >
-                  {{ formatDuration(friend.positionSec) }} /
-                  {{ formatDuration(friend.durationSec) }}
-                </span>
-              </div>
-              <div
-                v-if="friend.durationSec && friend.durationSec > 0"
-                class="lt-friend-progress-bar"
-              >
-                <div
-                  class="lt-friend-progress-fill"
-                  :style="{
-                    width: `${friendProgressPct(friend.positionSec, friend.durationSec)}%`,
+                  class="lt-status-chip"
+                  :class="{
+                    'is-online': bucket.friend.status === 'online',
+                    'is-checking': bucket.friend.status === 'checking',
+                    'is-offline':
+                      bucket.friend.status !== 'online' &&
+                      bucket.friend.status !== 'checking',
                   }"
-                />
+                >
+                  <span class="lt-status-dot" />
+                  <span>
+                    {{
+                      bucket.friend.status === "online"
+                        ? "Open"
+                        : bucket.friend.status === "checking"
+                          ? "…"
+                          : "Offline"
+                    }}
+                  </span>
+                </span>
+
+                <span class="lt-friend-name-chip">{{
+                  bucket.friend.displayName
+                }}</span>
+
+                <span
+                  v-if="
+                    bucket.friend.status === 'online' &&
+                    bucket.friend.memberCount
+                  "
+                  class="lt-friend-users-chip"
+                  :title="`${bucket.friend.memberCount} in room`"
+                >
+                  <span class="material-symbols-outlined lt-friend-users-icon">
+                    group
+                  </span>
+                  <span>{{ bucket.friend.memberCount }}</span>
+                </span>
+
+                <button
+                  v-if="bucket.friend.status === 'online'"
+                  type="button"
+                  class="lt-btn lt-btn-sm lt-btn-primary lt-friend-join-pill"
+                  :disabled="busyAction !== null"
+                  @click="
+                    dispatchCommand({
+                      type: 'joinFriend',
+                      pubKeyB64: bucket.friend.pubKeyB64,
+                    })
+                  "
+                >
+                  Join
+                </button>
+
+                <button
+                  type="button"
+                  class="lt-icon-btn lt-friend-remove-btn"
+                  title="Remove friend"
+                  @click="
+                    dispatchCommand({
+                      type: 'removeFriend',
+                      pubKeyB64: bucket.friend.pubKeyB64,
+                    })
+                  "
+                >
+                  <span class="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div
+                v-if="
+                  bucket.friend.status === 'online' &&
+                  (bucket.friend.trackTitle || bucket.friend.roomName)
+                "
+                class="lt-friend-now-playing"
+              >
+                <div class="lt-friend-track-row">
+                  <span class="lt-friend-track-title">
+                    {{ bucket.friend.trackTitle || bucket.friend.roomName }}
+                  </span>
+                  <span
+                    v-if="
+                      bucket.friend.durationSec &&
+                      bucket.friend.durationSec > 0
+                    "
+                    class="lt-friend-track-time"
+                  >
+                    {{ formatDuration(bucket.friend.positionSec) }} /
+                    {{ formatDuration(bucket.friend.durationSec) }}
+                  </span>
+                </div>
+                <div
+                  v-if="
+                    bucket.friend.durationSec && bucket.friend.durationSec > 0
+                  "
+                  class="lt-friend-progress-bar"
+                >
+                  <div
+                    class="lt-friend-progress-fill"
+                    :style="{
+                      width: `${friendProgressPct(bucket.friend.positionSec, bucket.friend.durationSec)}%`,
+                    }"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          </template>
         </div>
         <div
           v-else-if="state.pendingFriendRequests.length === 0"
@@ -796,6 +976,34 @@ function handleDismissError() {
 .lt-friend-entry.is-online {
   background-color: rgba(76, 175, 80, 0.06);
   border-color: rgba(76, 175, 80, 0.35);
+}
+
+.lt-friend-group-title {
+  font-weight: 600;
+}
+
+.lt-friend-group-members {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 4px;
+  border-left: 2px solid rgba(76, 175, 80, 0.35);
+}
+
+.lt-friend-group-member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lt-friend-group-member-name {
+  font-size: 12px;
+  color: #dcdcdc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lt-friend-top-row {
