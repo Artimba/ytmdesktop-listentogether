@@ -1019,6 +1019,39 @@ export default function setupListenTogether(
         background: linear-gradient(180deg, #102617 0%, #0b1910 100%) !important;
         box-shadow: inset 0 1px 0 rgba(76, 175, 80, 0.25) !important;
       }
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar .right-controls,
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar .right-controls-buttons,
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar .right-controls-buttons::before,
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar .middle-controls-buttons,
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar .expand-button,
+      html[data-ytmd-lt-mode="room"] ytmusic-player-bar ytmusic-player-expanding-menu {
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+      ytmusic-player-bar {
+        min-width: 0 !important;
+        max-width: 100vw !important;
+        box-sizing: border-box !important;
+      }
+      ytmusic-player-bar .middle-controls,
+      ytmusic-player-bar .content-info-wrapper {
+        min-width: 0 !important;
+      }
+      ytmusic-player-bar .right-controls {
+        flex-shrink: 0 !important;
+      }
+      ytmusic-player-page,
+      ytmusic-player-page #main-panel,
+      ytmusic-player-page #side-panel,
+      ytmusic-player-page tp-yt-paper-tabs,
+      ytmusic-player-page ytmusic-tab-renderer {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      ytmusic-player-page #side-panel {
+        overflow-x: hidden !important;
+      }
       html[data-ytmd-lt-mode="room"] ytmusic-player-bar #play-pause-button,
       html[data-ytmd-lt-mode="room"] ytmusic-player-bar .previous-button,
       html[data-ytmd-lt-mode="room"] ytmusic-player-bar .next-button {
@@ -2393,6 +2426,8 @@ export default function setupListenTogether(
     logger,
     onAdStarted: () => {
       if (lockState.locked && lockState.listeningMode !== "local") {
+        // Ensure a pre-roll ad that starts while pausedForBarrier is active actually plays instead of freezing paused.
+        playerApi.playVideo?.();
         listenTogetherApi.postMessage("adStarted");
       }
     },

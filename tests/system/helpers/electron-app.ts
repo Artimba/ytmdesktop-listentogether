@@ -272,3 +272,61 @@ export async function simulateLocalPlaybackEvent(
     }
   }, payload);
 }
+
+export async function simulateAdStarted(
+  instance: YtmdE2EInstance,
+): Promise<void> {
+  await instance.electronApp.evaluate(() => {
+    const ctx = (globalThis as any).__ytmdE2E;
+    const svc = ctx.listenTogetherService as any;
+    svc.listenTogetherApi.emit("adStarted");
+  });
+}
+
+export async function simulateAdEnded(
+  instance: YtmdE2EInstance,
+  localVideoId: string | null = null,
+): Promise<void> {
+  await instance.electronApp.evaluate((_electron, vid: string | null) => {
+    const ctx = (globalThis as any).__ytmdE2E;
+    const svc = ctx.listenTogetherService as any;
+    svc.listenTogetherApi.emit("adEnded", { localVideoId: vid });
+  }, localVideoId);
+}
+
+export async function simulateTrackReady(
+  instance: YtmdE2EInstance,
+  videoId: string,
+): Promise<void> {
+  await instance.electronApp.evaluate((_electron, vid: string) => {
+    const ctx = (globalThis as any).__ytmdE2E;
+    const svc = ctx.listenTogetherService as any;
+    svc.listenTogetherApi.emit("trackReady", { videoId: vid });
+  }, videoId);
+}
+
+export async function simulateTrackEnded(
+  instance: YtmdE2EInstance,
+): Promise<void> {
+  await instance.electronApp.evaluate(() => {
+    const ctx = (globalThis as any).__ytmdE2E;
+    const svc = ctx.listenTogetherService as any;
+    // PlayerSignal.TrackEnded === 1
+    svc.playerStateStore.emit("player-signal", 1);
+  });
+}
+
+export async function simulateTrackUnavailable(
+  instance: YtmdE2EInstance,
+  videoId: string,
+  reason: string | number = 150,
+): Promise<void> {
+  await instance.electronApp.evaluate(
+    (_electron, args: { videoId: string; reason: string | number }) => {
+      const ctx = (globalThis as any).__ytmdE2E;
+      const svc = ctx.listenTogetherService as any;
+      svc.playerStateStore.emit("track-unavailable", args.videoId, args.reason);
+    },
+    { videoId, reason },
+  );
+}

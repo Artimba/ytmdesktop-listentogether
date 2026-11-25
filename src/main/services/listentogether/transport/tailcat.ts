@@ -236,6 +236,7 @@ export class TailcatHostSidecar {
   private readonly spawnFn: TailcatSpawnFn;
   private readonly logger: ListenTogetherLogger;
   private child: TailcatChildProcess | null = null;
+  private genkeyChild: TailcatChildProcess | null = null;
   private stopPromise: Promise<void> | null = null;
 
   constructor(options: TailcatHostSidecarOptions = {}) {
@@ -276,12 +277,17 @@ export class TailcatHostSidecar {
         const keyFile = path.join(options.stateDir, "host.private.json");
         if (!fs.existsSync(keyFile)) {
           await new Promise<void>((resolveGen, rejectGen) => {
-            execFile(
+            const gk = execFile(
               bin,
               ["genkey", `--key=${keyFile}`],
               { env, timeout: 30_000, windowsHide: true },
-              (err) => (err ? rejectGen(err) : resolveGen()),
+              (err) => {
+                if (this.genkeyChild === gk) this.genkeyChild = null;
+                if (err) rejectGen(err);
+                else resolveGen();
+              },
             );
+            this.genkeyChild = gk;
           });
         }
         if (fs.existsSync(keyFile)) {
@@ -442,6 +448,11 @@ export class TailcatHostSidecar {
   }
 
   public stop(): Promise<void> {
+    if (this.genkeyChild) {
+      const gk = this.genkeyChild;
+      this.genkeyChild = null;
+      terminateChildImmediate(gk);
+    }
     if (this.stopPromise) {
       return this.stopPromise;
     }

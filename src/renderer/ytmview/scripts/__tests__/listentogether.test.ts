@@ -1789,5 +1789,89 @@ describe("listentogether pure helpers", () => {
         handle.cleanup();
       }
     });
+
+    it("calls playerApi.playVideo() on adStarted when locked in room mode so pausedForBarrier does not freeze an ad", async () => {
+      const handlers = new Map<string, (e: any) => unknown>();
+      const posted: Array<{ channel: string; payload: unknown }> = [];
+      let storeSubscriber: (() => void) | null = null;
+      let adPlaying = false;
+      const playVideo = vi.fn();
+
+      const fakeWindow = {
+        location: { href: "https://music.youtube.com/" },
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        setTimeout,
+        clearTimeout,
+      };
+
+      const handle = setupListenTogether({
+        listenTogetherApi: {
+          handleMessage: (ch: string, fn: (e: any) => unknown) => {
+            handlers.set(ch, fn);
+          },
+          postMessage: (channel: string, payload?: unknown) => {
+            posted.push({ channel, payload });
+          },
+        } as any,
+        ytmStore: {
+          getState: () => ({ player: { adPlaying } }),
+          subscribe: (fn: () => void) => {
+            storeSubscriber = fn;
+            return () => {
+              storeSubscriber = null;
+            };
+          },
+        } as any,
+        ytmPlayerController: {
+          nextVideo: vi.fn(),
+          previousVideo: vi.fn(),
+          playerApi: {
+            addEventListener: vi.fn(),
+            loadVideoById: vi.fn(),
+            playVideo,
+            pauseVideo: vi.fn(),
+            seekTo: vi.fn(),
+            getPlayerResponse: () => ({
+              videoDetails: { videoId: "dQw4w9WgXcQ" },
+            }),
+          },
+        } as any,
+        windowObj: fakeWindow as any,
+        documentObj: {
+          head: { appendChild: vi.fn() } as any,
+          body: { appendChild: vi.fn() } as any,
+          createElement: vi.fn(() => ({ style: {} })) as any,
+          querySelector: vi.fn(() => null) as any,
+          querySelectorAll: vi.fn(() => []) as any,
+        },
+      });
+
+      try {
+        await handlers.get("setSessionLock")!({
+          detail: {
+            args: [
+              {
+                locked: true,
+                isHost: false,
+                canAddSongs: false,
+                listeningMode: "room",
+              },
+            ],
+          },
+        });
+
+        adPlaying = true;
+        storeSubscriber?.();
+
+        expect(playVideo).toHaveBeenCalledTimes(1);
+        expect(posted).toContainEqual({
+          channel: "adStarted",
+          payload: undefined,
+        });
+      } finally {
+        handle.cleanup();
+      }
+    });
   });
 });

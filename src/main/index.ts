@@ -6,9 +6,11 @@ import {
   Menu,
   MenuItemConstructorOptions,
   nativeTheme,
+  net,
   powerMonitor,
   safeStorage,
   screen,
+  session,
   shell,
   Tray,
 } from "electron";
@@ -184,7 +186,7 @@ process.stderr?.on?.("error", swallowBrokenPipe);
 const configuredFileLevel = process.env.YTMD_LOG_LEVEL as
   | log.LevelOption
   | undefined;
-log.transports.file.level = configuredFileLevel || "warn";
+log.transports.file.level = configuredFileLevel || "info";
 log.transports.file.maxSize = MAX_LOG_FILE_BYTES;
 log.transports.console.level = app.isPackaged
   ? false
@@ -1046,6 +1048,81 @@ app.on("ready", async () => {
     log.info(
       "Cold-start Listen Together invite detected; setting listenTogetherPendingColdStart",
       { count: coldStartUrls.length },
+    );
+  }
+
+  if (process.env.YTMD_E2E_MODE === "1") {
+    const e2eTransparentPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+      "base64",
+    );
+    const e2eMockYtmHtml =
+      "<!doctype html><html><head><title>YouTube Music (E2E Mock)</title></head><body><ytmusic-app></ytmusic-app></body></html>";
+    const installE2ENetworkMock = (ses: Electron.Session) => {
+      ses.protocol.handle("https", (request) => {
+        let parsed: URL;
+        try {
+          parsed = new URL(request.url);
+        } catch {
+          return net.fetch(request, { bypassCustomProtocolHandlers: true });
+        }
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host === "music.youtube.com" ||
+          host === "www.youtube.com" ||
+          host === "youtube.com" ||
+          host === "m.youtube.com"
+        ) {
+          if (
+            parsed.pathname.startsWith("/youtubei/") ||
+            parsed.pathname.startsWith("/api/")
+          ) {
+            return new Response("{}", {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return new Response(e2eMockYtmHtml, {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        if (
+          host === "youtubei.googleapis.com" ||
+          host.endsWith(".googleapis.com")
+        ) {
+          return new Response("{}", {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (
+          host === "i.ytimg.com" ||
+          host.endsWith(".ytimg.com") ||
+          host === "lh3.googleusercontent.com" ||
+          host.endsWith(".ggpht.com")
+        ) {
+          return new Response(e2eTransparentPng, {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          });
+        }
+        if (
+          host.endsWith(".googlevideo.com") ||
+          host === "accounts.google.com" ||
+          host === "consent.youtube.com" ||
+          host.endsWith(".doubleclick.net") ||
+          host.endsWith(".googlesyndication.com") ||
+          host.endsWith(".google-analytics.com")
+        ) {
+          return new Response(null, { status: 204 });
+        }
+        return net.fetch(request, { bypassCustomProtocolHandlers: true });
+      });
+    };
+    installE2ENetworkMock(session.defaultSession);
+    installE2ENetworkMock(
+      session.fromPartition(app.isPackaged ? "persist:ytmview" : "persist:ytmview-dev"),
     );
   }
 

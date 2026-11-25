@@ -2,7 +2,7 @@ import type { ListenTogetherLogger } from "~shared/listentogether/logger";
 import type { AppViewOptions } from "../windowmanager/appview";
 
 export const LISTEN_TOGETHER_PANEL_WIDTH = 340;
-export const LISTEN_TOGETHER_NARROW_BREAKPOINT = 760;
+export const LISTEN_TOGETHER_NARROW_BREAKPOINT = 980;
 export const LISTEN_TOGETHER_TITLEBAR_HEIGHT = 36;
 
 export type ListenTogetherLayoutMode =

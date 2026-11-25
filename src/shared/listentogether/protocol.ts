@@ -410,6 +410,13 @@ export const AppMessageSchema = Type.Union([
     type: Type.Literal("FRIEND_REFERRAL"),
     inviteUrl: Type.String({ minLength: 1, maxLength: 4096 }),
   }),
+  Type.Object({
+    type: Type.Literal("FRIEND_ANNOUNCE"),
+    fromPeerId: Type.String({ minLength: 1, maxLength: 128 }),
+    fromDisplayName: DisplayNameSchema,
+    fromTcAddress: Type.String({ minLength: 1, maxLength: 512 }),
+    fromTcPort: Type.Integer({ minimum: 1, maximum: 65535 }),
+  }),
 ]);
 export type AppMessage = Static<typeof AppMessageSchema>;
 

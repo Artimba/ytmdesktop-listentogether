@@ -1083,16 +1083,45 @@ export function reduceRoomEvent(
       if (!member || member.listeningMode === event.listeningMode) {
         return { state, effects };
       }
+      const nextWaiting = { ...state.waitingOnAds };
+      const hadAdWait = nextWaiting[event.peerId] !== undefined;
+      if (event.listeningMode === "local" && hadAdWait) {
+        delete nextWaiting[event.peerId];
+        effects.push({
+          type: "CANCEL_TIMER",
+          timer: "AD_STUCK",
+          peerId: event.peerId,
+        });
+      }
+      const clearInAdStatus =
+        event.listeningMode === "local" && member.status === "in-ad";
+      const resumeFromAd =
+        event.listeningMode === "local" &&
+        hadAdWait &&
+        Object.keys(nextWaiting).length === 0 &&
+        state.pausedForAd;
+
       const nextState: RoomState = {
         ...state,
+        waitingOnAds: hadAdWait ? nextWaiting : state.waitingOnAds,
+        pausedForAd: resumeFromAd ? false : state.pausedForAd,
+        anchorHostTimeMs: resumeFromAd
+          ? state.desiredPlaybackState === "PLAYING"
+            ? nowMs + PLAYBACK_START_LEAD_MS
+            : nowMs
+          : state.anchorHostTimeMs,
         members: {
           ...state.members,
           [event.peerId]: {
             ...member,
             listeningMode: event.listeningMode,
+            status: clearInAdStatus ? "ready" : member.status,
           },
         },
       };
+      if (resumeFromAd) {
+        emitSyncAnchor(nextState, effects);
+      }
       emitMembersUpdated(nextState, effects);
       return { state: nextState, effects };
     }
@@ -1116,7 +1145,8 @@ export function reduceRoomEvent(
       if (
         member.status === "buffering" ||
         member.status === "catching-up" ||
-        member.status === "unavailable"
+        member.status === "unavailable" ||
+        member.status === "in-ad"
       ) {
         statusChanged = true;
         nextMembers = {
@@ -1312,6 +1342,7 @@ export function reduceRoomEvent(
 
       const activeNonAd = Object.values(state.members).filter(
         (m) =>
+          m.listeningMode !== "local" &&
           m.status !== "in-ad" &&
           m.status !== "catching-up" &&
           m.status !== "unavailable",
@@ -1321,7 +1352,8 @@ export function reduceRoomEvent(
         activeIds.size > 0
           ? endedVotes.filter((id) => activeIds.has(id)).length
           : endedVotes.length;
-      const quorumThreshold = Math.max(1, activeIds.size) * 0.5;
+      const quorumThreshold =
+        activeIds.size <= 1 ? 1 : Math.floor(activeIds.size / 2) + 1;
 
       const nextState: RoomState = {
         ...state,
@@ -1832,11 +1864,21 @@ export function reduceRoomEvent(
         const nextWaiting = { ...nextState.waitingOnAds };
         const nextTimeoutCounts = { ...nextState.adTimeoutCounts };
         const nextStayLivePeers = [...nextState.sessionStayLivePeers];
+        const nextMembers = { ...nextState.members };
         const expiredAdPeers: string[] = [];
+        let membersChanged = false;
 
         for (const [peerId, startedAtMs] of expiredAdEntries) {
           expiredAdPeers.push(peerId);
           delete nextWaiting[peerId];
+          const existingMember = nextMembers[peerId];
+          if (existingMember && existingMember.status === "in-ad") {
+            nextMembers[peerId] = {
+              ...existingMember,
+              status: "ready",
+            };
+            membersChanged = true;
+          }
           const count = (nextTimeoutCounts[peerId] ?? 0) + 1;
           nextTimeoutCounts[peerId] = count;
           logger.warn?.("Peer hit 90s stuck-ad timeout", {
@@ -1867,6 +1909,7 @@ export function reduceRoomEvent(
           Object.keys(nextWaiting).length === 0 && nextState.pausedForAd;
         nextState = {
           ...nextState,
+          members: membersChanged ? nextMembers : nextState.members,
           waitingOnAds: nextWaiting,
           adTimeoutCounts: nextTimeoutCounts,
           sessionStayLivePeers: nextStayLivePeers,
@@ -1887,6 +1930,9 @@ export function reduceRoomEvent(
         }
 
         emitSyncAnchor(nextState, effects);
+        if (membersChanged) {
+          emitMembersUpdated(nextState, effects);
+        }
       }
 
       if (

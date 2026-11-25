@@ -4,7 +4,12 @@ import {
   enqueueTrackInRoom,
   getListenTogetherState,
   launchYtmdInstance,
+  simulateAdEnded,
+  simulateAdStarted,
   simulateLocalPlaybackEvent,
+  simulateTrackEnded,
+  simulateTrackReady,
+  simulateTrackUnavailable,
   type YtmdE2EInstance,
 } from "./helpers/electron-app";
 
@@ -12,9 +17,8 @@ test.describe("Listen Together E2E", () => {
   const instances: YtmdE2EInstance[] = [];
 
   test.afterEach(async () => {
-    while (instances.length > 0) {
-      await closeYtmdInstance(instances.pop());
-    }
+    const toClose = instances.splice(0, instances.length);
+    await Promise.all(toClose.map((inst) => closeYtmdInstance(inst)));
   });
 
   test("header placement, invite popover, and footer leave flow", async () => {
@@ -670,5 +674,408 @@ test.describe("Listen Together E2E", () => {
     // Remove friend returns card to empty state
     await friendsCard.locator('button[title="Remove friend"]').click();
     await expect(friendsCard).toContainText("No friends yet");
+  });
+
+  test("3-person room: friend announce, mixed queue add & removal, host leave migration, and rejoin", async () => {
+    const alice = await launchYtmdInstance();
+    instances.push(alice);
+    const bob = await launchYtmdInstance();
+    instances.push(bob);
+    const charlie = await launchYtmdInstance();
+    instances.push(charlie);
+
+    await alice.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await alice.listenTogetherPage
+      .locator('input[placeholder*="Room name"]')
+      .fill("Trio Room");
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const aliceState = await getListenTogetherState(alice);
+    const inviteUrl = aliceState.room?.inviteUrl ?? "";
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+
+    for (const [peer, name] of [
+      [bob, "GuestBob"],
+      [charlie, "GuestCharlie"],
+    ] as const) {
+      const joinRes = await peer.electronApp.evaluate(
+        (_electron, args: { url: string; displayName: string }) => {
+          const ctx = (globalThis as any).__ytmdE2E;
+          return ctx.listenTogetherService.joinByUrl(args.url, {
+            displayName: args.displayName,
+          });
+        },
+        { url: inviteUrl, displayName: name },
+      );
+      expect(joinRes).toEqual({ ok: true });
+    }
+
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (3)");
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (3)");
+    await expect(
+      charlie.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (3)");
+
+    // Bob and Alice become mutual friends; FRIEND_ANNOUNCE populates Bob's tcAddress/47820 on Alice
+    await bob.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await bob.listenTogetherPage
+      .locator('button[title="Add friend"]')
+      .first()
+      .click();
+    await alice.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await alice.listenTogetherPage
+      .locator('button[title="Accept friend"]')
+      .first()
+      .click();
+
+    await expect(
+      alice.listenTogetherPage.locator('span[title="Friend"]'),
+    ).toBeVisible();
+
+    // Mixed queue additions from all 3 members
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-3p-a1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Alice Track 1",
+      author: "Alice",
+      durationSec: 180,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-3p-a2",
+      videoId: "9bZkp7q19f0",
+      title: "Alice Track 2",
+      author: "Alice",
+      durationSec: 190,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(bob, {
+      entryId: "e-3p-b1",
+      videoId: "3JZ_D3ELwOQ",
+      title: "Bob Track 1",
+      author: "Bob",
+      durationSec: 200,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(charlie, {
+      entryId: "e-3p-c1",
+      videoId: "L_jWHffIx5E",
+      title: "Charlie Track 1",
+      author: "Charlie",
+      durationSec: 210,
+      thumbnailUrl: null,
+    });
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-now-playing"),
+      ).toContainText("Alice Track 1");
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(3);
+    }
+
+    // Bob removes Bob Track 1; Alice removes Charlie Track 1 -> 1 track left in queue across all 3
+    const bobRowOnBob = bob.listenTogetherPage
+      .getByTestId("lt-queue-row")
+      .filter({ hasText: "Bob Track 1" });
+    await bobRowOnBob.locator('button[title="Remove"]').click();
+
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(2);
+
+    const charlieRowOnAlice = alice.listenTogetherPage
+      .getByTestId("lt-queue-row")
+      .filter({ hasText: "Charlie Track 1" });
+    await charlieRowOnAlice.locator('button[title="Remove"]').click();
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(1);
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row").first(),
+      ).toContainText("Alice Track 2");
+    }
+
+    // Host Alice clicks Leave (endForAll: false) -> host migrates to Bob, Charlie stays in room
+    await alice.listenTogetherPage.getByTestId("lt-leave-btn").click();
+    await expect(
+      alice.listenTogetherPage.getByRole("button", { name: "Create Room" }),
+    ).toBeVisible();
+
+    await expect(
+      bob.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (2)");
+    await expect(
+      charlie.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (2)");
+
+    // Alice sees Bob as Open in Lobby Friends card and rejoins via Join button
+    const aliceFriendsCard = alice.listenTogetherPage.getByTestId("lt-friends-card");
+    const aliceRefresh = aliceFriendsCard.locator('button[title="Refresh friends"]');
+    await expect(aliceRefresh.locator(".lt-spin")).toHaveCount(0);
+    await aliceRefresh.click();
+    await expect(aliceFriendsCard.locator(".lt-status-chip")).toContainText(
+      "Open",
+    );
+    await aliceFriendsCard
+      .getByRole("button", { name: "Join", exact: true })
+      .click();
+
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-friends-toggle"),
+    ).toContainText("Friends (3)");
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-queue-row").first(),
+    ).toContainText("Alice Track 2");
+  });
+
+  test("3-person room: in-ad peer requires strict majority for TRACK_ENDED and non-owner TRACK_UNAVAILABLE does not skip", async () => {
+    const alice = await launchYtmdInstance();
+    instances.push(alice);
+    const bob = await launchYtmdInstance();
+    instances.push(bob);
+    const charlie = await launchYtmdInstance();
+    instances.push(charlie);
+
+    await alice.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const aliceState = await getListenTogetherState(alice);
+    const inviteUrl = aliceState.room?.inviteUrl ?? "";
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+
+    for (const [peer, name] of [
+      [bob, "GuestBob"],
+      [charlie, "GuestCharlie"],
+    ] as const) {
+      const joinRes = await peer.electronApp.evaluate(
+        (_electron, args: { url: string; displayName: string }) => {
+          const ctx = (globalThis as any).__ytmdE2E;
+          return ctx.listenTogetherService.joinByUrl(args.url, {
+            displayName: args.displayName,
+          });
+        },
+        { url: inviteUrl, displayName: name },
+      );
+      expect(joinRes).toEqual({ ok: true });
+    }
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-friends-toggle"),
+      ).toContainText("Friends (3)");
+    }
+
+    // Enqueue 3 tracks: Bob owns Track 1 (Now Playing), Alice owns Track 2 & Track 3
+    await enqueueTrackInRoom(bob, {
+      entryId: "e-q-1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Quorum Track 1",
+      author: "Bob",
+      durationSec: 180,
+      thumbnailUrl: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    });
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText("Quorum Track 1");
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-q-2",
+      videoId: "9bZkp7q19f0",
+      title: "Quorum Track 2",
+      author: "Alice",
+      durationSec: 190,
+      thumbnailUrl: null,
+    });
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-q-3",
+      videoId: "3JZ_D3ELwOQ",
+      title: "Quorum Track 3",
+      author: "Alice",
+      durationSec: 200,
+      thumbnailUrl: null,
+    });
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-now-playing"),
+      ).toContainText("Quorum Track 1");
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(2);
+    }
+
+    // Charlie enters an ad -> active non-ad peer count becomes 2 (Alice + Bob)
+    await alice.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await simulateAdStarted(charlie);
+    await expect(alice.listenTogetherPage.locator(".lt-friends-list")).toContainText(
+      "In ad",
+    );
+
+    // Mark Track 1 ready on Alice & Bob, then a single premature TRACK_ENDED from Bob must NOT skip
+    await simulateTrackReady(alice, "dQw4w9WgXcQ");
+    await simulateTrackReady(bob, "dQw4w9WgXcQ");
+    await simulateTrackEnded(bob);
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.currentTrack?.title)
+      .toBe("Quorum Track 1");
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText("Quorum Track 1");
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-queue-row"),
+    ).toHaveCount(2);
+
+    // Second active peer (Alice) sending TRACK_ENDED reaches strict majority (2/2) -> advances to Quorum Track 2
+    await simulateTrackEnded(alice);
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-now-playing"),
+      ).toContainText("Quorum Track 2");
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(1);
+    }
+
+    // Stale TrackEnded from Bob BEFORE trackReady on Quorum Track 2 must be ignored
+    await simulateTrackEnded(bob);
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.currentTrack?.title)
+      .toBe("Quorum Track 2");
+
+    // Non-owner (Bob) reporting TRACK_UNAVAILABLE for Alice's Quorum Track 2 must NOT skip
+    await simulateTrackUnavailable(bob, "9bZkp7q19f0", 150);
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.currentTrack?.title)
+      .toBe("Quorum Track 2");
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-now-playing"),
+    ).toContainText("Quorum Track 2");
+
+    // Owner (Alice) reporting TRACK_UNAVAILABLE for Quorum Track 2 skips immediately to Quorum Track 3
+    await simulateTrackUnavailable(alice, "9bZkp7q19f0", 150);
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-now-playing"),
+      ).toContainText("Quorum Track 3");
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-queue-row"),
+      ).toHaveCount(0);
+    }
+  });
+
+  test("3-person room: adStarted pauses room, tuneOut clears ad wait, and adEnded resumes playback", async () => {
+    const alice = await launchYtmdInstance();
+    instances.push(alice);
+    const bob = await launchYtmdInstance();
+    instances.push(bob);
+    const charlie = await launchYtmdInstance();
+    instances.push(charlie);
+
+    await alice.listenTogetherPage.locator("#lt-display-name").fill("HostAlice");
+    await alice.listenTogetherPage
+      .getByRole("button", { name: "Create Room" })
+      .click();
+    await expect(
+      alice.listenTogetherPage.getByTestId("lt-invite-btn"),
+    ).toBeVisible();
+
+    const aliceState = await getListenTogetherState(alice);
+    const inviteUrl = aliceState.room?.inviteUrl ?? "";
+    expect(inviteUrl).toMatch(/^ytmd:\/\/l\//);
+
+    for (const [peer, name] of [
+      [bob, "GuestBob"],
+      [charlie, "GuestCharlie"],
+    ] as const) {
+      const joinRes = await peer.electronApp.evaluate(
+        (_electron, args: { url: string; displayName: string }) => {
+          const ctx = (globalThis as any).__ytmdE2E;
+          return ctx.listenTogetherService.joinByUrl(args.url, {
+            displayName: args.displayName,
+          });
+        },
+        { url: inviteUrl, displayName: name },
+      );
+      expect(joinRes).toEqual({ ok: true });
+    }
+
+    for (const inst of [alice, bob, charlie]) {
+      await expect(
+        inst.listenTogetherPage.getByTestId("lt-friends-toggle"),
+      ).toContainText("Friends (3)");
+    }
+
+    await enqueueTrackInRoom(alice, {
+      entryId: "e-ad-1",
+      videoId: "dQw4w9WgXcQ",
+      title: "Ad Test Track",
+      author: "Rick Astley",
+      durationSec: 213,
+      thumbnailUrl: null,
+    });
+
+    await simulateTrackReady(alice, "dQw4w9WgXcQ");
+    await simulateTrackReady(bob, "dQw4w9WgXcQ");
+    await simulateTrackReady(charlie, "dQw4w9WgXcQ");
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.desiredState)
+      .toBe("PLAYING");
+
+    // Charlie enters an ad -> room pauses for ad and Charlie shows "In ad"
+    await alice.listenTogetherPage.getByTestId("lt-friends-toggle").click();
+    await simulateAdStarted(charlie);
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.pausedForAd)
+      .toBe(true);
+    await expect(alice.listenTogetherPage.locator(".lt-friends-list")).toContainText(
+      "In ad",
+    );
+
+    // Charlie tunes out while in-ad -> room clears pausedForAd and In ad badge
+    await simulateLocalPlaybackEvent(charlie, {
+      kind: "track",
+      videoId: "L_jWHffIx5E",
+      title: "Local Track",
+    });
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.pausedForAd)
+      .toBe(false);
+    await expect(
+      alice.listenTogetherPage.locator(".lt-friends-list"),
+    ).not.toContainText("In ad");
+
+    // Bob enters an ad -> room pauses for ad, then adEnded resumes playback
+    await simulateAdStarted(bob);
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.pausedForAd)
+      .toBe(true);
+    await expect(alice.listenTogetherPage.locator(".lt-friends-list")).toContainText(
+      "In ad",
+    );
+
+    await simulateAdEnded(bob, "dQw4w9WgXcQ");
+    await expect
+      .poll(async () => (await getListenTogetherState(alice)).room?.anchor?.pausedForAd)
+      .toBe(false);
+    await expect(
+      alice.listenTogetherPage.locator(".lt-friends-list"),
+    ).not.toContainText("In ad");
   });
 });

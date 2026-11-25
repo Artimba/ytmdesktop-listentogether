@@ -402,9 +402,17 @@ async function handleCopyCode() {
   }, 2000);
 }
 
-function handleLeaveClick() {
+const leaving = ref(false);
+
+async function handleLeaveClick() {
+  if (leaving.value) return;
+  leaving.value = true;
   leaveMenuOpen.value = false;
-  void dispatchCommand({ type: "leaveRoom", endForAll: false });
+  try {
+    await dispatchCommand({ type: "leaveRoom", endForAll: false });
+  } finally {
+    leaving.value = false;
+  }
 }
 
 function handleEndForAllClick() {
@@ -1391,12 +1399,13 @@ function handleDragEnd() {
               type="button"
               class="lt-btn lt-btn-sm lt-footer-leave-btn"
               :class="{ 'is-split-main': room.isHost }"
+              :disabled="leaving"
               title="Leave room"
               data-testid="lt-leave-btn"
               @click="handleLeaveClick"
             >
               <span class="material-symbols-outlined">logout</span>
-              <span>Leave</span>
+              <span>{{ leaving ? "Leaving…" : "Leave" }}</span>
             </button>
             <button
               v-if="room.isHost"

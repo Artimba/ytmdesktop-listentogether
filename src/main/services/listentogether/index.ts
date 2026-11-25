@@ -440,6 +440,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
   } | null = null;
   private localInAd = false;
   private lastAppliedSeq: number | null = null;
+  private localReadySeq: number | null = null;
   private pendingPlayTimer: ReturnType<typeof setTimeout> | null = null;
   private adPostRollReloadedSeqs = new Set<number>();
   private lastAppliedSessionLock: {
@@ -915,6 +916,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       this.localPlaylist = null;
       this.localInAd = false;
       this.lastAppliedSeq = null;
+      this.localReadySeq = null;
       this.adPostRollReloadedSeqs.clear();
 
       directWsHost.onConnection((conn) => {
@@ -1219,7 +1221,13 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     if (!endForAll && this.sessionMode === "host" && this.hostPeers.size > 0) {
       const successor = this.pickMigrationSuccessor();
       if (successor) {
-        await this.initiateHostMigration(successor, "host-left", false);
+        try {
+          await this.initiateHostMigration(successor, "host-left", false);
+        } catch (err) {
+          this.logger.warn?.("Host migration during leave failed; ending room", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
     await this.teardownActiveSession({ sendRoomEnded: true, unlockView: true });
@@ -2289,10 +2297,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       });
       return;
     }
-    if (
-      this.friends.length === 0 ||
-      (!this.injectedDeps.createTailcatHost && !this.isTailcatAvailable())
-    ) {
+    if (!this.injectedDeps.createTailcatHost && !this.isTailcatAvailable()) {
       return;
     }
     const referralHost = new DirectWsHost({
@@ -2342,9 +2347,31 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       this.guestReferralSidecar = sidecar;
       this.guestReferralTcAddress = startedTc.tcAddress;
       this.guestReferralTcPort = startedTc.remotePort;
+      this.sendGuestAppMessage({
+        type: "FRIEND_ANNOUNCE",
+        fromPeerId: this.getSelfPeerId(),
+        fromDisplayName: this.displayName || "Listener",
+        fromTcAddress: startedTc.tcAddress,
+        fromTcPort: startedTc.remotePort,
+      });
     } catch {
       await this.stopGuestReferralListener();
     }
+  }
+
+  private handleFriendAnnounce(
+    msg: Extract<AppMessage, { type: "FRIEND_ANNOUNCE" }>,
+  ): void {
+    const selfPeerId = this.getSelfPeerId();
+    if (msg.fromPeerId === selfPeerId) return;
+    if (!this.friends.some((f) => f.pubKeyB64 === msg.fromPeerId)) return;
+    this.upsertFriend({
+      pubKeyB64: msg.fromPeerId,
+      displayName: msg.fromDisplayName,
+      tcAddress: msg.fromTcAddress,
+      tcPort: msg.fromTcPort,
+    });
+    this.emitStateChanged();
   }
 
   private async stopGuestReferralListener(): Promise<void> {
@@ -3053,6 +3080,8 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
       return;
     }
 
+    this.localReadySeq = anchor.seq;
+
     if (this.sessionMode === "host" && this.roomState) {
       this.dispatchRoomEvent({
         type: "TRACK_READY",
@@ -3081,6 +3110,17 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     const currentTrack = this.getCurrentTrack();
     const anchor = this.getCurrentAnchor();
     if (!currentTrack || !anchor) return;
+    if (this.localReadySeq !== anchor.seq) {
+      this.logger.debug?.(
+        "Ignoring stale local TrackEnded before trackReady for current seq",
+        {
+          anchorSeq: anchor.seq,
+          localReadySeq: this.localReadySeq,
+          videoId: currentTrack.videoId,
+        },
+      );
+      return;
+    }
 
     if (this.sessionMode === "host" && this.roomState) {
       this.dispatchRoomEvent({
@@ -4943,6 +4983,17 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
         }
         return;
       }
+
+      case "FRIEND_ANNOUNCE": {
+        const announced = { ...msg, fromPeerId: peerId };
+        this.handleFriendAnnounce(announced);
+        for (const [otherPeerId] of this.hostPeers) {
+          if (otherPeerId !== peerId) {
+            this.sendEncryptedToPeer(otherPeerId, announced);
+          }
+        }
+        return;
+      }
     }
   }
 
@@ -5682,6 +5733,11 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
         });
         return;
       }
+
+      case "FRIEND_ANNOUNCE": {
+        this.handleFriendAnnounce(msg);
+        return;
+      }
     }
   }
 
@@ -6321,6 +6377,7 @@ export default class ListenTogetherService extends EventEmitterService<ListenTog
     this.localPlaylist = null;
     this.localInAd = false;
     this.lastAppliedSeq = null;
+    this.localReadySeq = null;
     this.adPostRollReloadedSeqs.clear();
     this.audioBlocked = false;
     this.minorityUnavailable = false;
